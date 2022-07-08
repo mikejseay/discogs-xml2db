@@ -1,0 +1,160 @@
+artist - represents artists
+
+	id					original index - tracks artists
+	name 				artist's name (primZary alias and variation)
+	realname 			artist's real name
+	profile				text description (LONG)
+	data_quality		might be useful?
+
+artist_alias - represents the alias(es) of an artist
+
+	artist_id			matches index of 'artist'
+							IS NOT UNIQUE because artists often have multiple aliases
+	alias_name			artist's aliases (secondary aliases)
+
+artist_namevariation - represents the name variation(s) of an artist
+
+	artist_id			matches index of 'artist'
+							IS NOT UNIQUE because artists often have multiple name variations
+	name				name variations from primary alias (secondary variations)
+
+group_member - relates artists that are groups
+
+	group_artist_id		matches index of 'artist' - is the id of the group
+							IS NOT UNIQUE (by definition) bc each group has multiple artists
+	member_artist_id	matches index of 'artist' - is the id which is a member of that group
+							IS NOT UNIQUE because some artists are in multiple groups
+
+label - represents the labels that did the release
+
+	id 					original index - tracks labels
+	name 				label's name as string (UNIQUE)
+	contact_info		text description
+	profile				text description
+	parent_name			name of parent label
+	data_quality		might be useful?
+
+master - represents "master releases," each a common reference to an album's multiple releases
+
+	id 					original index - tracks "master releases"
+	title				the name of the album
+	year				release year
+	main_release		matches an index in 'releases' that is considered the 'main' one
+	data_quality		might be useful?
+
+master_artist - represents the artists of each master release - 2 499 432 total records
+combo of (master_id, artist_id) is unique on 2 491 010 records
+the remaining ones are where the same artist counted themselves as the artist multiple times but used name variations :(
+
+	master_id			matches index of 'master'
+							IS NOT UNIQUE because masters often have multiple artists
+	artist_id 			matches index of 'artist'
+							IS NOT UNIQUE because artists often have multiple masters
+	anv 				anv = artist name variation, if applicable (mostly null)
+	position			if a release has multiple artists, specifies order listed
+	join_string			how multiple artist names are joined syntactically
+							e.g. , / & - And Feat.
+
+master_genre - gives each master release a genre
+
+	master_id			matches index of 'master'
+							IS NOT UNIQUE because masters often belong in multiple genres
+	genre 				textual name of the genre (there are only 15 genres!!!)
+
+master_style - gives each master release a style
+
+	master_id			matches index of 'master'
+							IS NOT UNIQUE because masters often belong in multiple styles
+	style 				textual name of the style (there 602 styles!)
+
+release - represents all releases
+
+	id 					original index - tracks "releases"
+	title				the title of the release
+	released 			string representing WHEN it was released
+							NOT reliable for sorting because it's a string
+	country				country released in
+	notes				text description
+	data_quality		might be useful?
+	master_id			matches index of 'master'
+							IS NOT UNIQUE because masters often have multiple releases
+	main 				i added this, it's 1 if it's the main release
+	status				might be useful?
+
+release_artist - artists responsible for release, including artists beyond primary artist
+
+73 327 538 total records
+
+combo of (master_id, artist_id) is unique on 2491010 records
+the remaining ones are where the same artist counted themselves as the artist multiple times but used name variations :(
+
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often have multiple artists
+	artist_id 			matches index of 'artist'
+							IS NOT UNIQUE because artists often have multiple releases
+	extra				if 0, the primary artist. if 1, a non-primary artist
+	anv 				anv = artist name variation, if applicable (mostly null)
+	position			if a release has multiple artists, specifies order listed
+	join_string			how multiple artist names are joined syntactically
+							e.g. , / & - And Feat.
+	role 				describes artist's role on the release - null indicates primary artist
+							e.g. Producer, Written-By, Drums, Engineer, Mastered By, etc.
+	tracks				string describing which tracks the artist contributed to
+							e.g. 1, A, B1, etc.
+
+release_company - company responsible for release
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often have multiple artists
+							and furthermore, releases with multiple separate "parts," like a 
+							very large CD box set have separate rows for each part
+	company_id			this is a new index
+							IS NOT UNIQUE because releases often have multiple company credits
+							and furthermore, releases with multiple separate "parts," like a 
+							very large CD box set have separate rows for each part
+	company_name		the company name
+	entity_type			string of a number representing what the company did
+	entity_type_name	string representing what the company did, there are 32 possible values
+							e.g. Published By, Phonographic Copyright, Copyright, Recorded At
+
+release_format - format of release
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often have multiple separate parts  
+							e.g. a very large CD box set has separate rows for each part
+	name 				text descriptor of format, e.g. Vinyl, CD, File, Cassette, CDr, Shellac
+							there are 63 formats
+	qty 				# of distinct pieces of media in the release (e.g. large CD box set)
+	text_string			additional text descriptor describing a special quality of the release
+							e.g. 320 kbps, Gatefold, Digipak, Red, Cardboard Sleeve, Clear
+	descriptions		semicolon-delimited set of text descriptors for the release
+							e.g. Album, LP, Compilation, 7", 45 RPM, Single, MP3, etc.
+
+release_genre - genre of release
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often belong in multiple genres
+	genre 				textual name of the genre (there are only 15 genres!!!)
+
+release_identifier - extra info about the pressing (often etched on vinyl)
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often have multiple elements
+							of media, which have different etchings, etc
+	description 		describes the kind of info it is, e.g. Text, Scanned, Side A, Side B
+	type 				describes info source, e.g. Matrix / Runout, Barcode, Rights Society
+	value 				the etching itself, e.g. GEMA, BMI, BIEM, ASCAP, JASRAC, none, DDD
+
+release_label - label info on release.
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often relate to multiple labels
+	label_name			name of the label - can be used as a key
+							IS NOT UNIQUE because labels often have multiple releases
+	catno 				catalogue number
+
+release_style - style of release
+	release_id			matches index of 'release'
+							IS NOT UNIQUE because releases often belong in multiple styles
+	style 				textual name of the style (there are only 602 styles)
+
+
+-- new ideas
+
+-- Master with most releases for each genre?
+-- How many releases in each media format were made each year?

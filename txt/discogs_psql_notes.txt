@@ -1,0 +1,803 @@
+psql -U user					connect to the postgres session as user
+
+\l 								list databases
+
+\c database_name				connect to the database named
+
+\dt+							list all tables and their sizes
+
+\d+ table_name;					list the table's info
+
+SELECT * FROM table_name;		query all records from that table
+
+standard patterns
+-----------------
+
+-- view
+
+SELECT *
+FROM tbl
+LIMIT 100;
+
+-- countRows
+
+SELECT COUNT(*)
+FROM tbl
+WHERE field IS NULL;
+
+-- countDistinctValues
+
+SELECT
+COUNT(*)
+FROM(SELECT DISTINCT field
+    FROM tbl) AS tmp;
+
+-- instancesOfEachDistinctValue
+
+SELECT field, COUNT(*) AS instances
+FROM tbl
+GROUP BY field
+ORDER BY instances DESC
+LIMIT 100;
+
+-- drop a column
+
+ALTER TABLE tbl 
+DROP COLUMN IF EXISTS field;
+
+cool shit i didn't know about
+-----------------------------
+self-joins for finding combinations
+"INTO" to make a temporary table or whatever
+multi-line comments with /* and */
+UNION does not do a "look-up" step, it simply stacks tables...
+when doing set relation of two differently named fields, the first one's name is used in the result
+UNION removes duplicates (!!!)
+EXCEPT favors the left table (things in left table that are not in right table)
+when combining SELECT and WHERE, you can target completely different columns, and it's totally chill
+it's like when doing SELECT or FROM, you can just put a comma and involve another table and it's no big deal
+	this is really useful when you want to check a WHERE condition but the other table hasn't been involved
+why does my INNER JOIN have fewer values than i expect?
+	for example, there are 2.5mil rows in master_artist and 2.4mil rows when you join on artist
+	in this case, it's because there are masters with no artist AND artists with no masters
+	more specifically they have an artist_id of 194
+to reclaim disk space after a delete, run VACUUM ANALYZE
+
+how to do aggregation AND get other columns
+-------------------------------------------
+-- remember that you have to group by all columns that aren't being aggregated
+
+SELECT countries.name AS country, COUNT(*) AS cities_num
+  FROM cities
+    INNER JOIN countries
+    ON countries.code = cities.country_code
+GROUP BY country
+ORDER BY cities_num DESC, country
+LIMIT 9;
+
+-- or
+
+SELECT name AS country,
+  -- Subquery
+  (SELECT COUNT(*)
+   FROM cities
+   WHERE countries.code = cities.country_code) AS cities_num
+FROM countries
+ORDER BY cities_num DESC, country
+LIMIT 9;
+
+really make you think
+---------------------
+doing a full join and filtering so that neither of the matching fields are null is equivalent to an inner join
+
+general tools
+-------------
+for each column,
+	is key? key type?
+	is unique?
+	if not unique, # unique vals
+	if nullable, % null values
+return counts and distinct values
+
+todo
+----
+double-check that the python conversion of xml to csv has same values (anything missing, etc)
+double-check that the useless / quarantined files were indeed unnecessary
+
+how to build the discogs db
+---------------------------
+follow the instructions on https://github.com/philipmat/discogs-xml2db
+convert the xml to csv
+	using the new .NET parser is faster and gives the same results
+import into postgres
+	create the database
+		psql -U postgres
+		CREATE DATABASE discogs;
+	(in a python cmd line)
+		Get-Content postgresql/sql/CreateTables.sql | python postgresql/psql.py
+	(run python script to import)
+		Get-Content postgresql/sql/CreatePrimaryKeys.sql | python postgresql/psql.py
+		Get-Content postgresql/sql/CreateFKConstraints.sql | python postgresql/psql.py
+		Get-Content postgresql/sql/CreateIndexes.sql | python postgresql/psql.py
+
+SQL CODE
+--------
+
+-- ============================================
+-- THE FOLLOWING STEPS ARE ARGUABLY UNNECESSARY
+-- ============================================
+
+-- Some of the columns are redundant with other columns - 'denormalized.' While this could improve performance for certain queries, I will delete to minimize disk usage on my local machine.
+-- For example group_member.member_name is always identical to artist.name on their shared keys, group_member.member_artist_id and artist.id. To prove this, see that the following query returns nothing:
+
+SELECT g.member_artist_id, g.member_name, a.id, a.name
+FROM group_member AS g
+FULL JOIN artist AS a
+ON g.member_artist_id = a.id
+WHERE g.member_name <> a.name;
+
+-- Therefore, I will remove group_member.member_name. Again, it's important to note that this will necessitate joins later, but it adheres to the First Normal Form (I'm pretty sure).
+
+ALTER TABLE group_member 
+DROP COLUMN IF EXISTS member_name;
+
+-- There are some fields which SHOULD be identical but aren't. For example, a very small portion of rows in master_artist.artist_name (17408, or 0.7%) have capitalization inconsistencies with artist.name:
+
+SELECT ma.artist_name, a.name
+FROM master_artist AS ma
+FULL JOIN artist AS a
+ON ma.artist_id = a.id
+WHERE ma.artist_name <> a.name;
+
+-- A measly 3 rows still have some inconsistencies beyond this:
+
+SELECT ma.artist_name, a.name
+FROM master_artist AS ma
+FULL JOIN artist AS a
+ON ma.artist_id = a.id
+WHERE UPPER(ma.artist_name) <> UPPER(a.name);
+
+-- Because this introduces inconsistencies that violate 1NF, we will drop master_artist.artist_name and use joins to get that info.
+
+ALTER TABLE master_artist 
+DROP COLUMN IF EXISTS artist_name;
+
+-- And since the exact same situation exists for release_artist, we will drop release_artist.artist_name as well.
+
+ALTER TABLE release_artist 
+DROP COLUMN IF EXISTS artist_name;
+
+-- ============================================
+-- THE PREVIOUS STEPS ARE ARGUABLY UNNECESSARY
+-- ============================================
+
+-- Which artist has the most aliases?
+-- Caliph Mutabor. Multimedia artist. Founder of Genetic Trance. From Ukraine
+
+SELECT
+  id,
+  name
+FROM artist
+WHERE id IN
+      (SELECT DISTINCT artist_id
+       FROM artist_alias
+       WHERE alias_name IN
+             (SELECT alias_name
+              FROM artist_alias
+              WHERE artist_id =
+                    (SELECT artist_id
+                     FROM
+                       (SELECT
+                          artist_id,
+                          COUNT(*) AS instances
+                        FROM artist_alias
+                        GROUP BY artist_id
+                        ORDER BY instances DESC
+                        LIMIT 1) AS q1)));
+
+-- To get the ones that are like A**** Franklin, append AND alias_name LIKE 'A%Franklin%';
+
+-- Which artist has the most name variations?
+-- Traditional, Folk, Anonymous, and then Tchaikovsky.
+
+(SELECT *
+FROM artist)
+INNER JOIN (SELECT artist_id, COUNT(*) AS instances
+            FROM artist_namevariation
+            GROUP BY artist_id
+            ORDER BY instances DESC
+            LIMIT 10) as rt
+ON artist.id = rt.artist_id
+ORDER BY instances DESC;
+
+-- Which group has the most members?
+-- "The Liberty High School Grenadier Band" with 804
+
+SELECT *
+FROM artist
+INNER JOIN (SELECT group_artist_id, COUNT(*) AS instances
+            FROM group_member
+            GROUP BY group_artist_id
+            ORDER BY instances DESC) AS rt
+ON artist.id = rt.group_artist_id
+ORDER BY instances DESC;
+
+-- Which artist is a member of the most groups?
+-- Robert Pollard is a good one (Guided By Voices)
+
+SELECT *
+FROM artist
+INNER JOIN (SELECT member_artist_id, COUNT(*) AS instances
+            FROM group_member
+            GROUP BY member_artist_id
+            ORDER BY instances DESC
+            LIMIT 10) AS rt
+ON artist.id = rt.member_artist_id
+ORDER BY instances DESC
+LIMIT 10;
+
+-- Which groups is that person in?
+-- A bunch.
+
+SELECT *
+FROM artist
+WHERE id IN
+    (SELECT group_artist_id
+    FROM group_member
+    WHERE member_artist_id = 261485)
+ORDER BY id;
+
+-- What parent label has the most "child" labels?
+-- It's "Philips." Seems like Philips would create a new child company in every country.
+
+SELECT parent_name, COUNT(*) AS instances
+FROM label
+GROUP BY parent_name
+ORDER BY instances DESC
+LIMIT 10;
+
+-- What are those children labels?
+
+SELECT *
+FROM label
+WHERE parent_name = 'Philips';
+
+-- Because releases are only given entries in "master" if there are multiple versions (e.g. re-issues), the best way to get the list of all DISTINCT musical releases is actually a query on "release." This only works if the above update is made to the DB after initial import.
+
+SELECT *
+FROM release
+WHERE main = 1 OR master_id IS NULL;
+
+-- Let's try to find out more info about whether 'label' and 'release_label' accord.
+-- In 'label', the field 'name' is always unique and never NULL.
+-- In 'release_label', the field 'label_name' is NOT unique, but it's also ever NULL. There are about 17 releases per label.
+-- However, there are way more unique strings in 'label' (1.9mil) than the ones in 'release_label' (1.1mil) which means that 'label_name' has NULL values in the join.
+-- The extra label names in 'label' that can't be assigned to a release appear to be other legal entities (e.g. Publishers or Recording studios) that are associated with a release but nevertheless cannot be said to be the "main label" of a release.
+
+-- To see those null values you would do this:
+
+SELECT id, name, label_name, parent_name
+FROM label AS lt
+LEFT JOIN (SELECT DISTINCT label_name
+            FROM release_label) AS rt
+ON lt.name = rt.label_name
+ORDER BY id;
+
+-- But to find only the labels that can be specifically assigned as the main label on a release, you would do this:
+
+SELECT id, name, label_name, parent_name
+FROM label AS lt
+INNER JOIN (SELECT DISTINCT label_name
+            FROM release_label) AS rt
+ON lt.name = rt.label_name
+ORDER BY id;
+
+-- The punchline of this analysis is that 'release_label' is the more definitive source to begin from when considering labels and their releases.
+
+-- Starting from a label, find all "Genetic Trance" main or master releases. Note that this is string-sensitive, so not a great way of doing it.
+
+SELECT *
+FROM
+
+(SELECT *
+FROM release
+WHERE main = 1 OR master_id IS NULL
+) AS q1
+
+INNER JOIN
+
+(SELECT *
+FROM release_artist
+WHERE extra = 0 AND position = 1
+AND release_id IN
+(SELECT release_id
+FROM release_label
+WHERE label_name = 'Genetic Trance')) AS q2
+
+ON q1.id = q2.release_id;
+
+-- Is the main release always the earliest?
+-- It appears to be so, for example compare 'year' (numeric from master) with 'released' (string from release).
+
+SELECT year, released
+FROM master
+INNER JOIN (SELECT master_id, main, released
+            FROM release
+            WHERE master_id IS NOT NULL AND main = 1) AS rt
+ON master.id = rt.master_id
+WHERE year > 0
+ORDER BY year, released DESC;
+
+-- OR, for example compare 'released' (from main release) with 'earliest_release' (string from release).
+
+SELECT master_id, released, earliest_release
+FROM release
+INNER JOIN (SELECT master_id AS master_id2, MIN(released) as earliest_release
+            FROM release
+            GROUP BY master_id) AS rt
+ON release.master_id = rt.master_id2
+WHERE main = 1
+ORDER BY released;
+
+-- What is the master with the most releases?
+-- Pink Floyd's Dark Side of the Moon
+
+SELECT
+  id,
+  title,
+  year,
+  instances
+FROM master
+  INNER JOIN (SELECT
+                master_id,
+                COUNT(*) AS instances
+              FROM release
+              WHERE master_id IS NOT NULL
+              GROUP BY master_id) AS q1
+    ON master.id = q1.master_id
+ORDER BY instances DESC
+LIMIT 10;
+
+-- What artist has the most masters?
+-- Wolfgang Amadeus Mozart
+
+SELECT q1.artist_id, q1.instances, artist.name
+  FROM
+    (SELECT artist_id, COUNT(*) AS "instances"
+     FROM master_artist
+     GROUP by artist_id
+     ORDER BY instances DESC) AS q1
+INNER JOIN artist
+    ON q1.artist_id = artist.id
+LIMIT 10;
+
+-- What artist has the most distinct releases?
+-- This is pretty slow.
+-- Here's one way to do it:
+
+SELECT
+  q2.artist_id,
+  q2.num_distinct_releases,
+  a.name
+FROM
+  (SELECT
+     artist_id,
+     COUNT(*) AS num_distinct_releases
+   FROM
+     (SELECT artist_id
+      FROM release_artist
+      WHERE release_id IN
+            (SELECT id
+             FROM release
+             WHERE main = 1 OR master_id IS NULL)
+            AND artist_id NOT IN (0, 194, 355)) AS q1
+   GROUP BY artist_id
+   ORDER BY num_distinct_releases DESC
+   LIMIT 10) AS q2
+  INNER JOIN artist AS a
+    ON q2.artist_id = a.id;
+
+-- And this is another way (just as slow).
+
+SELECT
+  q3.artist_id,
+  q3.num_distinct_releases,
+  a.name
+FROM
+  (SELECT
+     artist_id,
+     COUNT(*) AS num_distinct_releases
+   FROM
+     (SELECT ra.artist_id
+      FROM release_artist AS ra
+        INNER JOIN
+        (SELECT id
+         FROM release
+         WHERE main = 1 OR master_id IS NULL) AS q1
+          ON ra.release_id = q1.id
+      WHERE ra.artist_id NOT IN (0, 194, 355)) AS q2
+   GROUP BY artist_id
+   ORDER BY num_distinct_releases DESC
+   LIMIT 10) AS q3
+  INNER JOIN artist AS a
+    ON q3.artist_id = a.id;
+
+-- What artist has the highest average number of releases per master?
+
+SELECT
+  q3.artist_id,
+  q3.avg_releases_per_master,
+  a.name
+FROM
+  (SELECT
+     artist_id,
+     AVG(releases_per_master) AS avg_releases_per_master
+   FROM
+     (SELECT
+        ma.master_id,
+        ma.artist_id,
+        q1.releases_per_master
+      FROM
+        (SELECT
+           master_id,
+           COUNT(*) AS releases_per_master
+         FROM release
+         GROUP BY master_id) AS q1
+        INNER JOIN master_artist AS ma
+          ON q1.master_id = ma.master_id) AS q2
+   GROUP BY artist_id) AS q3
+  INNER JOIN artist AS a
+    ON q3.artist_id = a.id
+ORDER BY avg_releases_per_master DESC
+LIMIT 10;
+
+-- What master has the longest name?
+
+SELECT id, title, length(title) AS title_length
+FROM master
+ORDER BY title_length DESC
+LIMIT 10;
+
+-- I would do the same for releases, but the results are kind of NSFW.
+
+-- What master was released earliest in time?
+
+SELECT *
+FROM master
+WHERE year > 0
+ORDER BY year
+LIMIT 10;
+
+-- What release was released earliest in time?
+
+SELECT *
+FROM release
+WHERE released <> '10-10-2014'
+  AND released LIKE '1%'
+ORDER BY released
+LIMIT 10;
+
+-- What master release has the most artists credited?
+
+SELECT
+  q1.master_id,
+  q1.num_artists,
+  m.title,
+  m.year
+FROM
+  (SELECT
+     master_id,
+     COUNT(*) AS num_artists
+   FROM master_artist
+   GROUP BY master_id
+   ORDER BY num_artists DESC
+   LIMIT 10) AS q1
+  INNER JOIN master AS m
+    ON q1.master_id = m.id;
+
+-- What release has the most artists credited?
+
+SELECT
+  q1.release_id,
+  q1.num_artists,
+  r.title,
+  r.released,
+  r.country
+FROM
+
+  (SELECT
+     release_id,
+     COUNT(*) AS num_artists
+   FROM release_artist
+   GROUP BY release_id
+   ORDER BY num_artists DESC
+   LIMIT 10) AS q1
+
+  INNER JOIN release AS r
+    ON q1.release_id = r.id;
+
+-- What are the most common "join strings", which denote how multiple artists were credited in a single release, among masters? (It's the same in releases.)
+
+SELECT
+  join_string,
+  COUNT(*) AS num_join_strings
+FROM master_artist
+WHERE join_string IS NOT NULL
+GROUP BY join_string
+ORDER BY num_join_strings DESC
+LIMIT 10;
+
+-- Which genre has the most master releases? There's only 15 genres on discogs, so this is a neat result.
+
+SELECT
+  genre,
+  COUNT(*) AS num_masters_per_genre
+FROM master_genre
+GROUP BY genre
+ORDER BY num_masters_per_genre DESC;
+
+-- Which style has the most master releases?
+
+SELECT
+  style,
+  COUNT(*) AS num_masters_per_style
+FROM master_style
+GROUP BY style
+ORDER BY num_masters_per_style DESC
+LIMIT 100;
+
+-- Which master release has the most genres?
+
+SELECT
+  master_id,
+  COUNT(*) AS num_genres_per_master
+FROM master_genre
+GROUP BY master_id
+ORDER BY num_genres_per_master DESC
+LIMIT 10;
+
+-- How many genres does each master release have, on average?
+
+SELECT AVG(num_genres_per_master)
+FROM
+  (SELECT
+     master_id,
+     COUNT(*) AS num_genres_per_master
+   FROM master_genre
+   GROUP BY master_id) AS q1;
+
+-- Which master release has the most styles?
+
+SELECT
+  master_id,
+  COUNT(*) AS num_styles_per_master
+FROM master_style
+GROUP BY master_id
+ORDER BY num_styles_per_master DESC
+LIMIT 10;
+
+-- Which genre is associated with the most styles?
+
+SELECT
+  q1.genre,
+  COUNT(*) AS styles_per_genre
+FROM
+  (SELECT
+     mg.master_id,
+     mg.genre,
+     ms.style
+   FROM master_genre AS mg
+     INNER JOIN master_style AS ms
+       ON mg.master_id = ms.master_id) AS q1
+GROUP BY q1.genre
+ORDER BY styles_per_genre DESC
+LIMIT 10;
+
+-- Which style is associated with the most genres?
+
+SELECT
+  q1.style,
+  COUNT(*) AS genres_per_style
+FROM
+  (SELECT
+     mg.master_id,
+     mg.genre,
+     ms.style
+   FROM master_genre AS mg
+     INNER JOIN master_style AS ms
+       ON mg.master_id = ms.master_id) AS q1
+GROUP BY q1.style
+ORDER BY genres_per_style DESC
+LIMIT 10;
+
+-- Which combination of genre and style is the most common?
+
+SELECT
+  q1.genre,
+  q1.style,
+  COUNT(*) AS num_instances
+FROM
+  (SELECT
+     mg.master_id,
+     mg.genre,
+     ms.style
+   FROM master_genre AS mg
+     INNER JOIN master_style AS ms
+       ON mg.master_id = ms.master_id) AS q1
+GROUP BY q1.genre, q1.style
+ORDER BY num_instances DESC
+LIMIT 10;
+
+-- How many masters did each year have?
+
+SELECT
+  year,
+  COUNT(*) AS masters_per_year
+FROM master
+WHERE year <> 0
+GROUP BY year
+ORDER BY year;
+
+-- In what year were the master releases made that have the highest total sum of lifetime releases?
+
+SELECT
+  m.year,
+  SUM(q1.releases_per_master) AS summed_rpm_in_year
+FROM master AS m
+  INNER JOIN (SELECT
+                master_id,
+                COUNT(*) AS releases_per_master
+              FROM release
+              WHERE master_id IS NOT NULL
+              GROUP BY master_id) AS q1
+    ON m.id = q1.master_id
+WHERE year <> 0
+GROUP BY m.year
+ORDER BY m.year;
+
+-- What are the most common non-primary roles on releases?
+
+SELECT
+  role,
+  COUNT(*) AS instances
+FROM release_artist
+WHERE role IS NOT NULL
+GROUP BY role
+ORDER BY instances DESC
+LIMIT 10;
+
+-- Which country had the most releases?
+
+SELECT
+  country,
+  COUNT(*) AS instances
+FROM release
+WHERE country IS NOT NULL
+GROUP BY country
+ORDER BY instances DESC
+LIMIT 10;
+
+-- Which country had the most masters?
+
+SELECT
+  country,
+  COUNT(*) AS instances
+FROM release
+WHERE country IS NOT NULL
+      AND main = 1
+GROUP BY country
+ORDER BY instances DESC
+LIMIT 10;
+
+-- Which country had the most distinct releases?
+
+SELECT
+  country,
+  COUNT(*) AS instances
+FROM release
+WHERE country IS NOT NULL
+      AND (main = 1 OR master_id IS NULL)
+GROUP BY country
+ORDER BY instances DESC
+LIMIT 10;
+
+-- Which company was associated with the most releases?
+
+SELECT
+  q2.company_id,
+  q2.instances,
+  l.name
+FROM
+  (SELECT
+     q1.company_id,
+     COUNT(*) AS instances
+   FROM
+     (SELECT DISTINCT
+        release_id,
+        company_id
+      FROM release_company) AS q1
+   GROUP BY q1.company_id
+   ORDER BY instances DESC
+   LIMIT 10) AS q2
+  INNER JOIN label AS l
+    ON q2.company_id = l.id;
+
+-- Which company was associated with the most distinct releases?
+
+SELECT
+  q2.company_id,
+  q2.instances,
+  l.name
+FROM
+  (SELECT
+     q1.company_id,
+     COUNT(*) AS instances
+   FROM
+     (SELECT
+        q0.release_id,
+        q0.company_id
+      FROM
+        (SELECT DISTINCT
+           release_id,
+           company_id
+         FROM release_company) AS q0
+        INNER JOIN release AS r
+          ON q0.release_id = r.id
+      WHERE r.main = 1 OR r.master_id IS NULL) AS q1
+   GROUP BY q1.company_id
+   ORDER BY instances DESC
+   LIMIT 10) AS q2
+  INNER JOIN label AS l
+    ON q2.company_id = l.id;
+
+-- Most common role of companies?
+
+SELECT
+  entity_type_name,
+  COUNT(*) AS instances
+FROM release_company
+GROUP BY entity_type_name
+ORDER BY instances DESC;
+
+-- Most common release formats?
+
+SELECT
+  name,
+  COUNT(*) AS instances
+FROM release_format
+GROUP BY name
+ORDER BY instances DESC;
+
+-- releases with the highest "quantity" for each format
+
+SELECT
+  q2.format,
+  q2.max_qty,
+  q2.min_release_id,
+  r.title
+FROM
+  (SELECT
+     q1.format,
+     q1.max_qty,
+     MIN(rf.release_id) AS min_release_id
+   FROM
+     (SELECT
+        name     AS format,
+        MAX(qty) AS max_qty
+      FROM release_format
+      GROUP BY name) AS q1
+     INNER JOIN
+     release_format AS rf
+       ON q1.max_qty = rf.qty AND q1.format = rf.name
+   GROUP BY q1.format, q1.max_qty) AS q2
+  INNER JOIN release AS r
+    ON q2.min_release_id = r.id
+ORDER BY max_qty DESC;
+
+-- for each format, the most common types of that format (e.g. 7" vinyl)
+
+SELECT name, descriptions, COUNT(*) AS instances
+FROM release_format
+GROUP BY name, descriptions
+ORDER BY instances DESC
+LIMIT 10;

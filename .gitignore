@@ -1,3 +1,6 @@
+xml
+.ipynb_checkpoints
+*.csv
 *.pyc
 Session.vim
 discogs_*_*.xml

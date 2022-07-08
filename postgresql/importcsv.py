@@ -5,6 +5,7 @@ import os
 import pathlib
 
 from psycopg2 import sql
+from glob import glob
 
 from dbconfig import connect_db, Config
 
@@ -38,5 +39,7 @@ root = os.path.realpath(os.path.dirname(__file__))
 config = Config(os.path.join(root, 'postgresql.conf'))
 db = connect_db(config)
 
-for filename in sys.argv[1:]:
+filenames = glob(sys.argv[1])
+
+for filename in filenames:
     load_csv(os.path.abspath(filename), db)
